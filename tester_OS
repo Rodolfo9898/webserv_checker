@@ -1,0 +1,66 @@
+#!/bin/sh
+# tester_OS: runs the provided webserv tester (src/tester), or the CGI program it relies on (src/cgi_tester), with the same
+# arguments and the same standard input.
+#
+#   tester_OS http://localhost:4442          the tester, against the server at that address
+#   tester_OS tester http://localhost:4442   the same
+#   tester_OS cgi_tester                     the CGI program (the server runs it for the files ending in .bla)
+#
+# Both are Linux x86-64 programs. They run as they are on a Linux x86-64 machine, and anywhere else (macOS, an ARM Linux) in a
+# Linux container of docker. There, localhost is the container: an address that says localhost or 127.0.0.1 is changed to
+# host.docker.internal, the machine that runs docker, where the server is.
+
+src=$0
+while [ -L "$src" ]; do
+	dir=$(cd "$(dirname "$src")" && pwd)
+	src=$(readlink "$src")
+	case $src in
+		/*) ;;
+		*) src=$dir/$src ;;
+	esac
+done
+dir=$(cd "$(dirname "$src")" && pwd)
+
+# Which program: the first argument names it, otherwise it is the tester.
+name=tester
+case $1 in
+	tester | cgi_tester)
+		name=$1
+		shift
+		;;
+esac
+
+# A zip or a download does not keep the executable bit.
+chmod +x "$dir/src/tester" "$dir/src/cgi_tester" 2>/dev/null
+
+if [ "$(uname -s)" = Linux ]; then
+	case $(uname -m) in
+		x86_64 | amd64) exec "$dir/src/$name" "$@" ;;
+	esac
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+	echo "tester_OS: $(uname -s) $(uname -m) cannot run the testers (Linux x86-64 programs):" >&2
+	echo "tester_OS: use a Linux x86-64 machine, or install docker" >&2
+	exit 1
+fi
+
+n=$#
+while [ "$n" -gt 0 ]; do
+	arg=$1
+	shift
+	case $arg in
+		http://localhost* | https://localhost* | http://127.0.0.1* | https://127.0.0.1*)
+			arg=$(printf '%s' "$arg" | sed -e 's#^\(https\{0,1\}://\)localhost#\1host.docker.internal#' \
+				-e 's#^\(https\{0,1\}://\)127\.0\.0\.1#\1host.docker.internal#')
+			;;
+	esac
+	set -- "$@" "$arg"
+	n=$((n - 1))
+done
+
+# The tester draws in the terminal: with a terminal, docker gets one too.
+tty=
+[ -t 0 ] && [ -t 1 ] && tty=-t
+exec docker run --rm -i $tty --platform linux/amd64 --add-host host.docker.internal:host-gateway \
+	-e TERM="${TERM:-xterm-256color}" -v "$dir/src:/checker:ro" "${TESTER_IMAGE:-debian:bookworm-slim}" "/checker/$name" "$@"
